@@ -1,0 +1,41 @@
+# TEMPLATE: on CI failure, run a headless agent with the failing log and open a DRAFT PR.
+# Requires secret ANTHROPIC_API_KEY. Adjust the workflow name and agent flags.
+# Never auto-merge: a human reviews the draft PR.
+name: ci-autofix
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+
+permissions:
+  contents: write
+  pull-requests: write
+  actions: read
+
+jobs:
+  autofix:
+    if: ${{ github.event.workflow_run.conclusion == 'failure' && github.event.workflow_run.head_branch != 'main' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_branch }}
+      - name: Fetch failed logs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh run view ${{ github.event.workflow_run.id }} --log-failed | tail -n 300 > /tmp/failure.log
+      - uses: actions/setup-node@v4
+        with: { node-version: 20 }
+      - name: Run agent (headless)
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          npm i -g @anthropic-ai/claude-code
+          claude -p "CI failed. The log is at /tmp/failure.log. Find the root cause and make the minimal fix. Do not edit tests to make them pass. Do not touch unrelated files." --max-turns 15
+      - name: Open draft PR
+        uses: peter-evans/create-pull-request@v6
+        with:
+          branch: autofix/${{ github.event.workflow_run.id }}
+          title: "autofix: CI failure on ${{ github.event.workflow_run.head_branch }}"
+          body: "Automated draft fix generated from failed run ${{ github.event.workflow_run.id }}. Review carefully."
+          draft: true
